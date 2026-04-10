@@ -17,6 +17,7 @@ Configure in .claude/settings.json:
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -76,6 +77,11 @@ def build_context() -> str:
 
 
 def main():
+    # Skip injection when running via pi-claude-bridge (pi-kb handles memory there)
+    if os.environ.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC") == "1":
+        print(json.dumps({}))
+        return
+
     context = build_context()
 
     output = {
