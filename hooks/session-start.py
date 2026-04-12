@@ -63,6 +63,26 @@ def build_context() -> str:
     else:
         parts.append("## Knowledge Base Index\n\n(empty - no articles compiled yet)")
 
+    # Retrieval instructions
+    kb_path = KNOWLEDGE_DIR.resolve()
+    compiler_root = ROOT.resolve()
+    parts.append(f"""## Knowledge Base Retrieval Instructions
+
+You have a compiled knowledge base at `{kb_path}/`. The index above lists every article with a one-line summary.
+
+**When to retrieve:** Before answering questions that overlap with topics in the index, READ the relevant article files in full. The index is a table of contents — the actual knowledge (gotchas, decisions, patterns, details) lives in the articles.
+
+**How to retrieve:**
+1. Scan the index for articles relevant to the current topic
+2. Use the Read tool to read the full article(s) from `{kb_path}/concepts/` or `{kb_path}/connections/`
+3. Use the article content to inform your answer
+
+**When to file back:** If a conversation produces a novel answer worth keeping, run:
+```
+cd "{compiler_root}" && uv run python scripts/query.py "question" --file-back
+```
+This creates a Q&A article in `{kb_path}/qa/` and updates the index — compounding the knowledge base.""")
+
     # Recent daily log
     recent_log = get_recent_log()
     parts.append(f"## Recent Daily Log\n\n{recent_log}")
