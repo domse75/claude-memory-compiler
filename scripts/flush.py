@@ -88,6 +88,11 @@ Do NOT use any tools — just return plain text.
 
 Format your response as a structured daily log entry with these sections:
 
+**Signal:** [high|medium|low]
+- high: Novel decisions, strategies, architecture patterns, pricing/business insights, lessons from failure, new workflows
+- medium: Implementation details with reusable technical insights, debugging that revealed a non-obvious gotcha
+- low: Routine tool usage, repetitive debugging of known issues, trivial config changes, standard CRUD work
+
 **Context:** [One line about what the user was working on]
 
 **Key Exchanges:**
@@ -140,15 +145,30 @@ respond with exactly: FLUSH_OK
 
 
 COMPILE_AFTER_HOUR = 18  # 6 PM local time
+COMPILE_LOCK_FILE = SCRIPTS_DIR / "compile.lock"
+COMPILE_LOCK_MAX_AGE = 1800  # 30 minutes
 
 
 def maybe_trigger_compilation() -> None:
-    """If it's past the compile hour and today's log hasn't been compiled, run compile.py."""
+    """If it's past the compile hour and today's log hasn't been compiled, run compile.py.
+
+    Uses a lock file to prevent duplicate compilation spawns.
+    """
     import subprocess as _sp
 
     now = datetime.now(timezone.utc).astimezone()
     if now.hour < COMPILE_AFTER_HOUR:
         return
+
+    # Check lock file — skip if another compilation was triggered recently
+    if COMPILE_LOCK_FILE.exists():
+        try:
+            lock_age = time.time() - COMPILE_LOCK_FILE.stat().st_mtime
+            if lock_age < COMPILE_LOCK_MAX_AGE:
+                logging.info("Compilation lock exists (%ds old), skipping", int(lock_age))
+                return
+        except OSError:
+            pass
 
     # Check if today's log has already been compiled
     today_log = f"{now.strftime('%Y-%m-%d')}.md"
@@ -158,7 +178,6 @@ def maybe_trigger_compilation() -> None:
             compile_state = json.loads(compile_state_file.read_text(encoding="utf-8"))
             ingested = compile_state.get("ingested", {})
             if today_log in ingested:
-                # Already compiled today - check if the log has changed since
                 from hashlib import sha256
                 log_path = DAILY_DIR / today_log
                 if log_path.exists():
@@ -171,6 +190,12 @@ def maybe_trigger_compilation() -> None:
     compile_script = SCRIPTS_DIR / "compile.py"
     if not compile_script.exists():
         return
+
+    # Create lock file before spawning
+    try:
+        COMPILE_LOCK_FILE.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
 
     logging.info("End-of-day compilation triggered (after %d:00)", COMPILE_AFTER_HOUR)
 

@@ -18,6 +18,7 @@ Configure in .claude/settings.json:
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,11 +26,14 @@ from pathlib import Path
 # Paths relative to project root
 ROOT = Path(__file__).resolve().parent.parent
 KNOWLEDGE_DIR = ROOT / "knowledge"
+CONCEPTS_DIR = KNOWLEDGE_DIR / "concepts"
+CONNECTIONS_DIR = KNOWLEDGE_DIR / "connections"
 DAILY_DIR = ROOT / "daily"
 INDEX_FILE = KNOWLEDGE_DIR / "index.md"
 
 MAX_CONTEXT_CHARS = 20_000
 MAX_LOG_LINES = 30
+MAX_EXCERPT_CHARS = 200
 
 
 def get_recent_log() -> str:
@@ -48,6 +52,46 @@ def get_recent_log() -> str:
     return "(no recent daily log)"
 
 
+def get_article_excerpt(path: Path) -> str:
+    """Extract the first meaningful paragraph after the title heading."""
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+    # Strip YAML frontmatter
+    if content.startswith("---"):
+        end = content.find("---", 3)
+        if end != -1:
+            content = content[end + 3:].strip()
+
+    # Skip the title heading (first # line)
+    lines = content.split("\n")
+    body_started = False
+    excerpt_lines = []
+    for line in lines:
+        if not body_started:
+            if line.startswith("# "):
+                body_started = True
+            continue
+        # Skip section headings and empty lines at the start
+        if not excerpt_lines and (not line.strip() or line.startswith("#")):
+            if line.startswith("## "):
+                continue  # skip Key Points etc
+            if not line.strip():
+                continue
+        if line.startswith("#"):
+            break  # stop at next heading
+        if line.strip().startswith("- "):
+            break  # stop at bullet lists
+        excerpt_lines.append(line)
+        if len(" ".join(excerpt_lines)) > MAX_EXCERPT_CHARS:
+            break
+
+    excerpt = " ".join(l.strip() for l in excerpt_lines).strip()
+    return excerpt[:MAX_EXCERPT_CHARS]
+
+
 def build_context() -> str:
     """Assemble the context to inject into the conversation."""
     parts = []
@@ -56,10 +100,27 @@ def build_context() -> str:
     today = datetime.now(timezone.utc).astimezone()
     parts.append(f"## Today\n{today.strftime('%A, %B %d, %Y')}")
 
-    # Knowledge base index (the core retrieval mechanism)
+    # Knowledge base index with article excerpts
     if INDEX_FILE.exists():
         index_content = INDEX_FILE.read_text(encoding="utf-8")
-        parts.append(f"## Knowledge Base Index\n\n{index_content}")
+
+        # Build enriched index with excerpts
+        excerpts = []
+        for subdir in [CONCEPTS_DIR, CONNECTIONS_DIR]:
+            if not subdir.exists():
+                continue
+            for md_file in sorted(subdir.glob("*.md")):
+                rel = md_file.relative_to(KNOWLEDGE_DIR)
+                slug = str(rel).replace(".md", "")
+                excerpt = get_article_excerpt(md_file)
+                if excerpt:
+                    excerpts.append(f"- **[[{slug}]]**: {excerpt}")
+
+        enriched = index_content
+        if excerpts:
+            enriched += "\n\n## Article Summaries\n\n" + "\n".join(excerpts)
+
+        parts.append(f"## Knowledge Base Index\n\n{enriched}")
     else:
         parts.append("## Knowledge Base Index\n\n(empty - no articles compiled yet)")
 

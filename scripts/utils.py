@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import logging
+import os
 import re
 from pathlib import Path
 
@@ -16,19 +18,28 @@ from config import (
     STATE_FILE,
 )
 
+logger = logging.getLogger(__name__)
 
 # ── State management ──────────────────────────────────────────────────
 
+_DEFAULT_STATE = {"ingested": {}, "query_count": 0, "last_lint": None, "total_cost": 0.0}
+
+
 def load_state() -> dict:
-    """Load persistent state from state.json."""
+    """Load persistent state from state.json. Self-heals on corruption."""
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"ingested": {}, "query_count": 0, "last_lint": None, "total_cost": 0.0}
+        try:
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("state.json corrupted (%s), returning default state", e)
+    return dict(_DEFAULT_STATE)
 
 
 def save_state(state: dict) -> None:
-    """Save state to state.json."""
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    """Save state to state.json using atomic write to prevent corruption."""
+    tmp = STATE_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    os.replace(tmp, STATE_FILE)
 
 
 # ── File hashing ──────────────────────────────────────────────────────

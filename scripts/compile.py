@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import sys
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from utils import (
 
 # ── Paths for the LLM to use ──────────────────────────────────────────
 ROOT_DIR = Path(__file__).resolve().parent.parent
+COMPILE_LOCK = ROOT_DIR / "scripts" / "compile.lock"
 
 
 async def compile_daily_log(log_path: Path, state: dict) -> float:
@@ -49,19 +51,6 @@ async def compile_daily_log(log_path: Path, state: dict) -> float:
     schema = AGENTS_FILE.read_text(encoding="utf-8")
     wiki_index = read_wiki_index()
 
-    # Read existing articles for context
-    existing_articles_context = ""
-    existing = {}
-    for article_path in list_wiki_articles():
-        rel = article_path.relative_to(KNOWLEDGE_DIR)
-        existing[str(rel)] = article_path.read_text(encoding="utf-8")
-
-    if existing:
-        parts = []
-        for rel_path, content in existing.items():
-            parts.append(f"### {rel_path}\n```markdown\n{content}\n```")
-        existing_articles_context = "\n\n".join(parts)
-
     timestamp = now_iso()
 
     prompt = f"""You are a knowledge compiler. Your job is to read a daily conversation log
@@ -75,10 +64,6 @@ and extract knowledge into structured wiki articles.
 
 {wiki_index}
 
-## Existing Wiki Articles
-
-{existing_articles_context if existing_articles_context else "(No existing articles yet)"}
-
 ## Daily Log to Compile
 
 **File:** {log_path.name}
@@ -89,21 +74,31 @@ and extract knowledge into structured wiki articles.
 
 Read the daily log above and compile it into wiki articles following the schema exactly.
 
+### Signal-aware compilation
+
+Each session entry may have a **Signal:** tag (high, medium, or low). Use it:
+- **high signal**: Create or substantially update a dedicated article. Full Key Points + Details.
+- **medium signal**: Add to an existing article or create a brief one. Key Points sufficient, Details optional.
+- **low signal**: Skip unless it adds a genuinely new gotcha to an existing article. Do NOT create new articles for low-signal sessions.
+- **No signal tag**: Treat as medium.
+
 ### Rules:
 
-1. **Extract key concepts** - Identify 3-7 distinct concepts worth their own article
+1. **Extract key concepts** - Focus on high and medium signal entries. Create articles only for knowledge worth retrieving later.
 2. **Create concept articles** in `knowledge/concepts/` - One .md file per concept
    - Use the exact article format from AGENTS.md (YAML frontmatter + sections)
    - Include `sources:` in frontmatter pointing to the daily log file
    - Use `[[concepts/slug]]` wikilinks to link to related concepts
    - Write in encyclopedia style - neutral, comprehensive
-3. **Create connection articles** in `knowledge/connections/` if this log reveals non-obvious
-   relationships between 2+ existing concepts
+   - **Be concise.** Key Points: 3-5 bullets. Details: 1-3 focused paragraphs, not blow-by-blow narrative.
+3. **Create connection articles** in `knowledge/connections/` only for genuinely non-obvious relationships
 4. **Update existing articles** if this log adds new information to concepts already in the wiki
-   - Read the existing article, add the new information, add the source to frontmatter
-5. **Update knowledge/index.md** - Add new entries to the table
+   - Use the Read tool to read the existing article BEFORE editing it
+   - Add the new information and update the source in frontmatter
+5. **Check before creating** - Read the index. If a similar article already exists, UPDATE it instead of creating a duplicate. Use the Read tool to check.
+6. **Update knowledge/index.md** - Add new entries to the table
    - Each entry: `| [[path/slug]] | One-line summary | source-file | {timestamp[:10]} |`
-6. **Append to knowledge/log.md** - Add a timestamped entry:
+7. **Append to knowledge/log.md** - Add a timestamped entry:
    ```
    ## [{timestamp}] compile | {log_path.name}
    - Source: daily/{log_path.name}
@@ -112,6 +107,7 @@ Read the daily log above and compile it into wiki articles following the schema 
    ```
 
 ### File paths:
+- Existing articles are in: {KNOWLEDGE_DIR}/concepts/ and {KNOWLEDGE_DIR}/connections/
 - Write concept articles to: {CONCEPTS_DIR}
 - Write connection articles to: {CONNECTIONS_DIR}
 - Update index at: {KNOWLEDGE_DIR / 'index.md'}
@@ -121,7 +117,7 @@ Read the daily log above and compile it into wiki articles following the schema 
 - Every article must have complete YAML frontmatter
 - Every article must link to at least 2 other articles via [[wikilinks]]
 - Key Points section should have 3-5 bullet points
-- Details section should have 2+ paragraphs
+- Details section should be 1-3 paragraphs (concise, not session-by-session narrative)
 - Related Concepts section should have 2+ entries
 - Sources section should cite the daily log with specific claims extracted
 """
@@ -169,6 +165,15 @@ def main():
     parser.add_argument("--file", type=str, help="Compile a specific daily log file")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be compiled")
     args = parser.parse_args()
+
+    # Process-level lock: only one compile.py can run at a time
+    lock_fh = open(COMPILE_LOCK, "w")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, BlockingIOError):
+        print("Another compile.py is already running, exiting.")
+        lock_fh.close()
+        return
 
     state = load_state()
 
@@ -218,6 +223,11 @@ def main():
     articles = list_wiki_articles()
     print(f"\nCompilation complete. Total cost: ${total_cost:.2f}")
     print(f"Knowledge base: {len(articles)} articles")
+
+    # Release lock
+    fcntl.flock(lock_fh, fcntl.LOCK_UN)
+    lock_fh.close()
+    COMPILE_LOCK.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
